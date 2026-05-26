@@ -28,6 +28,8 @@ services:
     environment:
       # Override DATABASE_URL to use the internal Docker hostname
       DATABASE_URL: postgresql://bot_user:bot_password@postgres:5432/bot_db
+    extra_hosts:
+      - "api.telegram.org:149.154.167.220"
     volumes:
       - ./logs:/app/logs   # persist logs across restarts
 
