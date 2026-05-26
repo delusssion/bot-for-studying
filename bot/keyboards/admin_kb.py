@@ -108,13 +108,35 @@ def broadcast_confirm_kb() -> InlineKeyboardMarkup:
 
 # ── Finance ───────────────────────────────────────────────────────────────────
 
-def finance_period_kb() -> InlineKeyboardMarkup:
+def finance_period_kb(pending_count: int = 0) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
-    b.button(text="📅 Сегодня",  callback_data="adm:fin_today")
-    b.button(text="📅 7 дней",   callback_data="adm:fin_7d")
-    b.button(text="📅 30 дней",  callback_data="adm:fin_30d")
-    b.button(text="📅 Всё время",callback_data="adm:fin_all")
+    b.button(text="📅 Сегодня",   callback_data="adm:fin_today")
+    b.button(text="📅 7 дней",    callback_data="adm:fin_7d")
+    b.button(text="📅 30 дней",   callback_data="adm:fin_30d")
+    b.button(text="📅 Всё время", callback_data="adm:fin_all")
+    pending_label = f"⏳ Ожидают подтверждения ({pending_count})" if pending_count else "⏳ Ожидают подтверждения"
+    b.button(text=pending_label, callback_data="adm:pending_payments")
+    b.adjust(2, 2, 1)
+    return b.as_markup()
+
+
+# ── Ozon Payment ──────────────────────────────────────────────────────────────
+
+def payment_confirm_kb(code: str) -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.button(text="✅ Подтвердить", callback_data=f"confirm_payment:{code}")
+    b.button(text="❌ Отклонить",   callback_data=f"reject_payment:{code}")
     b.adjust(2)
+    return b.as_markup()
+
+
+def payment_reject_reasons_kb(code: str) -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.button(text="Перевод не поступил",        callback_data=f"reject_reason:{code}:no_transfer")
+    b.button(text="Неверная сумма",             callback_data=f"reject_reason:{code}:wrong_amount")
+    b.button(text="Код не указан в комментарии", callback_data=f"reject_reason:{code}:no_code")
+    b.button(text="✏️ Своя причина",            callback_data=f"reject_reason:{code}:custom")
+    b.adjust(1)
     return b.as_markup()
 
 

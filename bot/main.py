@@ -18,6 +18,32 @@ setup_logging()
 logger = logging.getLogger(__name__)
 
 
+async def _cancel_expired_payments(bot: Bot) -> None:
+    from bot.db.queries import get_expired_pending_payments, update_payment_status
+    expired = await get_expired_pending_payments()
+    for payment in expired:
+        await update_payment_status(payment["id"], "expired")
+        try:
+            await bot.send_message(
+                payment["user_id"],
+                "⏱ Время ожидания платежа истекло.\n"
+                "Создайте новый запрос на пополнение.",
+            )
+        except Exception:
+            pass
+    if expired:
+        logger.info("Expired %d pending ozon payment(s).", len(expired))
+
+
+async def _run_periodic(coro_factory, interval: int, **kwargs) -> None:
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            await coro_factory(**kwargs)
+        except Exception:
+            logger.exception("Periodic task %s failed.", coro_factory.__name__)
+
+
 async def main() -> None:
     bot = Bot(
         token=config.bot_token,
@@ -45,6 +71,8 @@ async def main() -> None:
     pool = await get_pool()
     await create_tables(pool)
     logger.info("Database tables ensured.")
+
+    asyncio.create_task(_run_periodic(_cancel_expired_payments, interval=300, bot=bot))
 
     try:
         logger.info("Bot polling started (drop_pending_updates=True).")

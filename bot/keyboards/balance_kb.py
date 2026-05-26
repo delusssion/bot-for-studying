@@ -12,9 +12,21 @@ PRESET_AMOUNTS = [
 
 def balance_main_kb() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
-    builder.button(text="💳 Банковская карта", callback_data="topup_method:card")
-    builder.button(text="📱 СБП", callback_data="topup_method:sbp")
+    builder.button(text="💳 Карта Ozon", callback_data="topup_method:card")
     builder.button(text="⭐ Telegram Stars", callback_data="topup_method:stars")
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def ozon_payment_kb(code: str, amount_kopecks: int, sbp_link: str = "") -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text=f"📋 Скопировать код {code}", callback_data=f"ozon_copy:{code}")
+    if sbp_link:
+        builder.button(text="📲 Оплатить через СБП", url=sbp_link)
+    builder.button(
+        text="✅ Я перевёл, жду начисления",
+        callback_data=f"ozon_paid:{code}:{amount_kopecks}",
+    )
     builder.adjust(1)
     return builder.as_markup()
 

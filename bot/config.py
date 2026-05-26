@@ -61,3 +61,9 @@ MODEL_DEFAULT = "google/gemini-2.0-flash-001"
 MODEL_PRESENTATION = "anthropic/claude-sonnet-4-6"
 VIP_DAILY_LIMIT = 3
 SUPPORT_USERNAME = "Uchenikbot_adm"
+OZON_CARD_NUMBER = os.getenv("OZON_CARD_NUMBER", "0000 0000 0000 0000")
+OZON_CARD_OWNER = os.getenv("OZON_CARD_OWNER", "Имя Фамилия")
+OZON_SBP_LINK = os.getenv(
+    "OZON_SBP_LINK",
+    "https://finance.ozon.ru/apps/sbp/ozonbankpay/019e644b-9096-782b-8ffc-9368ae8a641f",
+)
