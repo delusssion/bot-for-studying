@@ -1,0 +1,35 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: bot_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: bot_db
+      POSTGRES_USER: bot_user
+      POSTGRES_PASSWORD: bot_password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bot_user -d bot_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  bot:
+    build: .
+    container_name: telegram_bot
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      # Override DATABASE_URL to use the internal Docker hostname
+      DATABASE_URL: postgresql://bot_user:bot_password@postgres:5432/bot_db
+    volumes:
+      - ./logs:/app/logs   # persist logs across restarts
+
+volumes:
+  postgres_data:
