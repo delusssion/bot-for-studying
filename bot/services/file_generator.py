@@ -5,8 +5,10 @@ import logging
 import os
 import pathlib
 import re
+import shutil
 import subprocess
 import tempfile
+import traceback
 from typing import List
 
 import httpx
@@ -200,20 +202,54 @@ def create_lab_docx(data: dict, output_path: str) -> str:
 
 # ─── PPTX public ──────────────────────────────────────────────────────────────
 
-async def create_presentation_pptx(data: dict, output_path: str) -> str:
-    pptx_path = await _generate_pptx_nodejs(data, output_path)
+def _log_env_check() -> None:
+    logger.info("PPTX env check — node: %s | soffice: %s | pdftoppm: %s | script: %s",
+                shutil.which("node"),
+                shutil.which("soffice"),
+                shutil.which("pdftoppm"),
+                os.path.exists(_PPTX_SCRIPT))
+    try:
+        r = subprocess.run(["node", "--version"], capture_output=True, text=True, timeout=5)
+        logger.info("Node version: %s", r.stdout.strip())
+    except Exception as e:
+        logger.error("node --version failed: %s", e)
 
-    png_paths = await _convert_to_images(pptx_path)
+
+async def create_presentation_pptx(data: dict, output_path: str) -> str:
+    _log_env_check()
+
+    try:
+        logger.info("Step 1: generating pptx via nodejs")
+        pptx_path = await _generate_pptx_nodejs(data, output_path)
+    except Exception:
+        logger.error("Step 1 FAILED:\n%s", traceback.format_exc())
+        raise
+
+    try:
+        logger.info("Step 2: converting to images")
+        png_paths = await _convert_to_images(pptx_path)
+    except Exception:
+        logger.error("Step 2 FAILED:\n%s", traceback.format_exc())
+        png_paths = []
+
     if not png_paths:
         logger.warning("Visual QA skipped: conversion to images failed")
         return pptx_path
 
-    issues = await _visual_qa(png_paths, data)
+    try:
+        logger.info("Step 3: visual QA (%d images)", len(png_paths))
+        issues = await _visual_qa(png_paths, data)
+    except Exception:
+        logger.error("Step 3 FAILED:\n%s", traceback.format_exc())
+        issues = None
 
     if issues:
-        logger.info("Visual QA found issues, regenerating: %s", issues[:120])
-        fixed_data = await _fix_presentation_data(data, issues)
-        pptx_path = await _generate_pptx_nodejs(fixed_data, output_path)
+        try:
+            logger.info("Step 4: fixing data — issues: %s", issues[:200])
+            fixed_data = await _fix_presentation_data(data, issues)
+            pptx_path = await _generate_pptx_nodejs(fixed_data, output_path)
+        except Exception:
+            logger.error("Step 4 FAILED:\n%s", traceback.format_exc())
 
     for p in png_paths:
         try:
@@ -237,7 +273,9 @@ async def _generate_pptx_nodejs(data: dict, output_path: str) -> str:
             ["node", _PPTX_SCRIPT, json_path, output_path],
             capture_output=True, text=True, timeout=60,
         )
+        logger.info("nodejs stdout: %s", result.stdout.strip())
         if result.returncode != 0:
+            logger.error("nodejs stderr: %s", result.stderr)
             raise RuntimeError(f"pptxgenjs error: {result.stderr}")
         logger.info("PPTX saved: %s", output_path)
         return output_path
@@ -250,25 +288,31 @@ async def _convert_to_images(pptx_path: str) -> List[str]:
         dir_path = os.path.dirname(pptx_path) or "/tmp"
         basename = os.path.splitext(os.path.basename(pptx_path))[0]
 
-        # PPTX → PDF via libreoffice
+        logger.info("libreoffice: converting %s → pdf in %s", pptx_path, dir_path)
         lo_result = await asyncio.to_thread(
             subprocess.run,
             ["libreoffice", "--headless", "--convert-to", "pdf",
              "--outdir", dir_path, pptx_path],
             capture_output=True, timeout=90,
         )
+        logger.info("libreoffice rc=%d stdout=%s stderr=%s",
+                    lo_result.returncode,
+                    lo_result.stdout.decode()[:200],
+                    lo_result.stderr.decode()[:200])
+
         pdf_path = os.path.join(dir_path, basename + ".pdf")
         if not os.path.exists(pdf_path):
-            logger.warning("libreoffice conversion failed: %s", lo_result.stderr.decode())
+            logger.warning("PDF not found at %s after libreoffice", pdf_path)
             return []
 
-        # PDF → PNG via pdftoppm
         png_prefix = os.path.join(dir_path, basename + "_slide")
-        await asyncio.to_thread(
+        ppm_result = await asyncio.to_thread(
             subprocess.run,
             ["pdftoppm", "-png", "-r", "100", pdf_path, png_prefix],
             capture_output=True, timeout=60,
         )
+        logger.info("pdftoppm rc=%d stderr=%s", ppm_result.returncode,
+                    ppm_result.stderr.decode()[:200])
         os.unlink(pdf_path)
 
         prefix_base = os.path.basename(png_prefix)
@@ -277,9 +321,10 @@ async def _convert_to_images(pptx_path: str) -> List[str]:
             for f in os.listdir(dir_path)
             if f.startswith(prefix_base) and f.endswith(".png")
         ])
+        logger.info("PNG files found: %d", len(pngs))
         return pngs
-    except Exception as e:
-        logger.error("Convert to images error: %s", e)
+    except Exception:
+        logger.error("Convert to images error:\n%s", traceback.format_exc())
         return []
 
 
