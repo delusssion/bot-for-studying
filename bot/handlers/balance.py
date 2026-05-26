@@ -1,12 +1,14 @@
+import io
 import logging
 
 import pytz
+import qrcode
 from aiogram import F, Router
 from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, LabeledPrice, Message
+from aiogram.types import BufferedInputFile, CallbackQuery, LabeledPrice, Message
 
-from bot.config import OZON_CARD_NUMBER, OZON_CARD_OWNER, config
+from bot.config import OZON_CARD_NUMBER, OZON_CARD_OWNER, OZON_SBP_LINK, config
 from bot.db.queries import create_card_payment, get_user, get_user_balance
 from bot.keyboards.balance_kb import balance_main_kb, card_payment_kb, topup_amounts_kb
 from bot.keyboards.admin_kb import payment_confirm_kb
@@ -96,17 +98,32 @@ async def topup_custom_input(message: Message, state: FSMContext) -> None:
         await _send_stars_invoice(message, message.from_user.id, amount_kopecks)
 
 
+def _make_qr(link: str) -> BufferedInputFile:
+    img = qrcode.make(link)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    buf.seek(0)
+    return BufferedInputFile(buf.read(), filename="qr.png")
+
+
 async def _send_card_instructions(target: Message, amount_kopecks: int) -> None:
     rubles = amount_kopecks // 100
     text = (
         f"💳 <b>Пополнение баланса</b>\n\n"
-        f"Переведите ровно <b>{rubles} ₽</b> на карту:\n\n"
+        f"Переведите ровно <b>{rubles} ₽</b> на карту или через СБП:\n\n"
         f"💳 <code>{OZON_CARD_NUMBER}</code>\n"
         f"🏦 Ozon банк\n"
         f"👤 {OZON_CARD_OWNER}\n\n"
-        f"После перевода нажмите кнопку ниже."
+        f"Или отсканируйте QR-код / перейдите по ссылке СБП ниже.\n\n"
+        f"После перевода нажмите кнопку «Я перевёл»."
     )
-    await target.answer(text, reply_markup=card_payment_kb(amount_kopecks), parse_mode="HTML")
+    from bot.keyboards.balance_kb import card_payment_with_sbp_kb
+    await target.answer_photo(
+        photo=_make_qr(OZON_SBP_LINK),
+        caption=text,
+        reply_markup=card_payment_with_sbp_kb(amount_kopecks, OZON_SBP_LINK),
+        parse_mode="HTML",
+    )
 
 
 @router.callback_query(F.data == "card_cancel")
