@@ -903,7 +903,7 @@ async def _send_pptx(
     with tempfile.NamedTemporaryFile(suffix=".pptx", delete=False) as f:
         tmp = f.name
     try:
-        create_presentation_pptx(data, tmp)
+        await create_presentation_pptx(data, tmp)
         fname = f"pres_{order_id}.pptx" if not is_combo else f"pres_combo_{order_id}.pptx"
         doc = FSInputFile(tmp, filename=fname)
         sent = await bot.send_document(user_id, doc, caption=f"📊 Презентация — заказ #{order_id}")

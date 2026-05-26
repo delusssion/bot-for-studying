@@ -1,81 +1,23 @@
-import io
+import asyncio
+import json
 import logging
-from typing import Any, Dict, List
+import os
+import pathlib
+import subprocess
+import tempfile
+from typing import List
 
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Cm, Pt, RGBColor
-from pptx import Presentation
-from pptx.dml.color import RGBColor as PptRGB
-from pptx.enum.text import PP_ALIGN
-from pptx.util import Cm as PptCm
-from pptx.util import Inches, Pt as PptPt
 
 logger = logging.getLogger(__name__)
 
-# ─── PPTX color scheme ────────────────────────────────────────────────────────
-
-_PRESET_SCHEMES: Dict[str, Dict[str, str]] = {
-    "blue": {
-        "background": "#FFFFFF",
-        "title_color": "#1F3864",
-        "accent":      "#2E75B6",
-        "text":        "#333333",
-        "header_fill": "#2E75B6",
-        "header_text": "#FFFFFF",
-    },
-    "green": {
-        "background": "#FFFFFF",
-        "title_color": "#1E4620",
-        "accent":      "#2E7D32",
-        "text":        "#333333",
-        "header_fill": "#2E7D32",
-        "header_text": "#FFFFFF",
-    },
-    "dark": {
-        "background": "#1E1E2E",
-        "title_color": "#FFFFFF",
-        "accent":      "#7C83FD",
-        "text":        "#E0E0E0",
-        "header_fill": "#7C83FD",
-        "header_text": "#FFFFFF",
-    },
-    "minimal": {
-        "background": "#FAFAFA",
-        "title_color": "#212121",
-        "accent":      "#757575",
-        "text":        "#424242",
-        "header_fill": "#F5F5F5",
-        "header_text": "#212121",
-    },
-}
-
-
-def _hex_to_ppt_rgb(hex_str: str) -> PptRGB:
-    h = hex_str.lstrip("#")
-    try:
-        return PptRGB(int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
-    except (ValueError, IndexError):
-        return PptRGB(0x2E, 0x75, 0xB6)
-
-
-def _get_color_scheme(data: dict) -> Dict[str, PptRGB]:
-    custom = data.get("custom_colors")
-    if custom and isinstance(custom, dict):
-        source = {
-            "background": custom.get("background", "#FFFFFF"),
-            "title_color": custom.get("primary", "#1F3864"),
-            "accent":      custom.get("accent", "#2E75B6"),
-            "text":        custom.get("text", "#333333"),
-            "header_fill": custom.get("header_fill", "#2E75B6"),
-            "header_text": custom.get("header_text", "#FFFFFF"),
-        }
-    else:
-        scheme_name = data.get("color_scheme", "blue")
-        source = _PRESET_SCHEMES.get(scheme_name, _PRESET_SCHEMES["blue"])
-    return {k: _hex_to_ppt_rgb(v) for k, v in source.items()}
+_PPTX_SCRIPT = str(
+    pathlib.Path(__file__).resolve().parent.parent.parent / "scripts" / "generate_pptx.js"
+)
 
 
 # ─── DOCX helpers ─────────────────────────────────────────────────────────────
@@ -251,294 +193,29 @@ def create_lab_docx(data: dict, output_path: str) -> str:
     return output_path
 
 
-# ─── PPTX helpers ─────────────────────────────────────────────────────────────
-
-_HDR_H = PptCm(1.2)
-_WHITE = PptRGB(0xFF, 0xFF, 0xFF)
-
-
-def _ppt_set_bg(slide, color: PptRGB) -> None:
-    fill = slide.background.fill
-    fill.solid()
-    fill.fore_color.rgb = color
-
-
-def _ppt_add_textbox(
-    slide,
-    text: str,
-    left, top, width, height,
-    font_size: int = 18,
-    bold: bool = False,
-    color: PptRGB | None = None,
-    align=PP_ALIGN.LEFT,
-    wrap: bool = True,
-    font_name: str = "Calibri",
-) -> None:
-    txBox = slide.shapes.add_textbox(left, top, width, height)
-    tf = txBox.text_frame
-    tf.word_wrap = wrap
-    tf.auto_size = None
-    p = tf.paragraphs[0]
-    p.alignment = align
-    run = p.add_run()
-    run.text = text
-    run.font.name = font_name
-    run.font.size = PptPt(font_size)
-    run.font.bold = bold
-    if color:
-        run.font.color.rgb = color
-
-
-def _ppt_header_bar(slide, title: str, scheme: Dict[str, PptRGB], prs: Presentation) -> None:
-    bar = slide.shapes.add_shape(1, 0, 0, prs.slide_width, _HDR_H)
-    bar.fill.solid()
-    bar.fill.fore_color.rgb = scheme["header_fill"]
-    bar.line.fill.background()
-    _ppt_add_textbox(
-        slide, title,
-        PptCm(0.4), PptCm(0.15),
-        prs.slide_width - PptCm(0.8), _HDR_H,
-        font_size=14, bold=True,
-        color=scheme["header_text"],
-        align=PP_ALIGN.LEFT,
-    )
-
-
-def _ppt_slide_number(slide, number: int, scheme: Dict[str, PptRGB], prs: Presentation) -> None:
-    w = PptCm(1.2)
-    h = PptCm(0.5)
-    margin = PptCm(0.3)
-    _ppt_add_textbox(
-        slide, str(number),
-        prs.slide_width - w - margin,
-        prs.slide_height - h - margin,
-        w, h,
-        font_size=12,
-        color=scheme["accent"],
-        align=PP_ALIGN.RIGHT,
-    )
-
-
-def _ppt_bullets(
-    slide, items: List[str], scheme: Dict[str, PptRGB], prs: Presentation,
-    top, height, font_size: int,
-) -> None:
-    content_left = PptCm(1.0)
-    content_w = prs.slide_width - PptCm(2.0)
-    txBox = slide.shapes.add_textbox(content_left, top, content_w, height)
-    tf = txBox.text_frame
-    tf.word_wrap = True
-    for i, bullet in enumerate(items):
-        p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
-        p.alignment = PP_ALIGN.LEFT
-        mr = p.add_run()
-        mr.text = "▸ "
-        mr.font.name = "Calibri"
-        mr.font.size = PptPt(font_size)
-        mr.font.color.rgb = scheme["accent"]
-        tr = p.add_run()
-        tr.text = str(bullet)
-        tr.font.name = "Calibri"
-        tr.font.size = PptPt(font_size)
-        tr.font.color.rgb = scheme["text"]
-
-
-def _bullet_font_size(count: int) -> int:
-    if count <= 4:
-        return 18
-    if count <= 6:
-        return 16
-    if count <= 9:
-        return 14
-    return 12
-
-
-# ─── PPTX slide builders ──────────────────────────────────────────────────────
-
-def _ppt_build_title_slide(slide, data: dict, scheme: Dict[str, PptRGB], prs: Presentation, num: int) -> None:
-    _ppt_set_bg(slide, scheme["background"])
-
-    # Title
-    _ppt_add_textbox(
-        slide, data.get("title", ""),
-        PptCm(1.5), PptCm(4.0),
-        prs.slide_width - PptCm(3.0), PptCm(4.0),
-        font_size=40, bold=True,
-        color=scheme["title_color"],
-        align=PP_ALIGN.CENTER,
-    )
-
-    # Subtitle
-    subtitle = data.get("subtitle") or data.get("notes", "")
-    if subtitle:
-        _ppt_add_textbox(
-            slide, subtitle,
-            PptCm(2.0), PptCm(8.5),
-            prs.slide_width - PptCm(4.0), PptCm(2.0),
-            font_size=22,
-            color=scheme["accent"],
-            align=PP_ALIGN.CENTER,
-        )
-
-    # Decorative line — 40% width centered
-    line_w = int(prs.slide_width * 0.4)
-    line_left = (prs.slide_width - line_w) // 2
-    line = slide.shapes.add_shape(1, line_left, PptCm(12.5), line_w, PptPt(3))
-    line.fill.solid()
-    line.fill.fore_color.rgb = scheme["accent"]
-    line.line.fill.background()
-
-    _ppt_slide_number(slide, num, scheme, prs)
-
-
-def _ppt_build_content_slide(slide, data: dict, scheme: Dict[str, PptRGB], prs: Presentation, num: int) -> None:
-    _ppt_set_bg(slide, scheme["background"])
-    _ppt_header_bar(slide, data.get("title", ""), scheme, prs)
-
-    content: List[str] = data.get("content", [])
-    font_size = _bullet_font_size(len(content))
-
-    content_top = _HDR_H + PptCm(0.5)
-    content_h = prs.slide_height - content_top - PptCm(0.8)
-    _ppt_bullets(slide, content, scheme, prs, content_top, content_h, font_size)
-    _ppt_slide_number(slide, num, scheme, prs)
-
-
-def _ppt_build_two_column_slide(slide, data: dict, scheme: Dict[str, PptRGB], prs: Presentation, num: int) -> None:
-    left_col: List[str] = data.get("left_column") or []
-    right_col: List[str] = data.get("right_column") or []
-
-    # Fallback: if the model returned content instead of left/right columns
-    if not left_col and not right_col:
-        content: List[str] = data.get("content", [])
-        mid = max(1, len(content) // 2)
-        left_col, right_col = content[:mid], content[mid:]
-
-    if not left_col and not right_col:
-        _ppt_build_content_slide(slide, data, scheme, prs, num)
-        return
-
-    _ppt_set_bg(slide, scheme["background"])
-    _ppt_header_bar(slide, data.get("title", ""), scheme, prs)
-
-    col_top = _HDR_H + PptCm(0.5)
-    col_h = prs.slide_height - col_top - PptCm(0.8)
-    font_size = _bullet_font_size(max(len(left_col), len(right_col)))
-    col_w = prs.slide_width // 2 - PptCm(1.0)
-
-    # Left column
-    txl = slide.shapes.add_textbox(PptCm(0.5), col_top, col_w, col_h)
-    tfl = txl.text_frame
-    tfl.word_wrap = True
-    for i, item in enumerate(left_col):
-        p = tfl.paragraphs[0] if i == 0 else tfl.add_paragraph()
-        mr = p.add_run(); mr.text = "▸ "; mr.font.name = "Calibri"; mr.font.size = PptPt(font_size); mr.font.color.rgb = scheme["accent"]
-        tr = p.add_run(); tr.text = str(item); tr.font.name = "Calibri"; tr.font.size = PptPt(font_size); tr.font.color.rgb = scheme["text"]
-
-    # Vertical divider
-    div_x = prs.slide_width // 2
-    div = slide.shapes.add_shape(1, div_x, col_top, PptPt(1), col_h)
-    div.fill.solid(); div.fill.fore_color.rgb = scheme["accent"]; div.line.fill.background()
-
-    # Right column
-    txr = slide.shapes.add_textbox(div_x + PptCm(0.3), col_top, col_w, col_h)
-    tfr = txr.text_frame
-    tfr.word_wrap = True
-    for i, item in enumerate(right_col):
-        p = tfr.paragraphs[0] if i == 0 else tfr.add_paragraph()
-        mr = p.add_run(); mr.text = "▸ "; mr.font.name = "Calibri"; mr.font.size = PptPt(font_size); mr.font.color.rgb = scheme["accent"]
-        tr = p.add_run(); tr.text = str(item); tr.font.name = "Calibri"; tr.font.size = PptPt(font_size); tr.font.color.rgb = scheme["text"]
-
-    _ppt_slide_number(slide, num, scheme, prs)
-
-
-def _ppt_build_section_header_slide(slide, data: dict, scheme: Dict[str, PptRGB], prs: Presentation, num: int) -> None:
-    _ppt_set_bg(slide, scheme["background"])
-
-    # Colored band in the center
-    band_h = PptCm(5.0)
-    band_top = (prs.slide_height - band_h) // 2
-    band = slide.shapes.add_shape(1, 0, band_top, prs.slide_width, band_h)
-    band.fill.solid()
-    band.fill.fore_color.rgb = scheme["header_fill"]
-    band.line.fill.background()
-
-    _ppt_add_textbox(
-        slide, data.get("title", ""),
-        PptCm(1.0), band_top + PptCm(0.5),
-        prs.slide_width - PptCm(2.0), band_h - PptCm(1.0),
-        font_size=36, bold=True,
-        color=scheme["header_text"],
-        align=PP_ALIGN.CENTER,
-    )
-    _ppt_slide_number(slide, num, scheme, prs)
-
-
-def _ppt_build_conclusion_slide(slide, data: dict, scheme: Dict[str, PptRGB], prs: Presentation, num: int) -> None:
-    _ppt_set_bg(slide, scheme["background"])
-    _ppt_header_bar(slide, data.get("title", ""), scheme, prs)
-
-    content: List[str] = data.get("content", [])
-    font_size = _bullet_font_size(len(content))
-    footer_h = PptCm(1.5)
-    content_top = _HDR_H + PptCm(0.5)
-    content_h = prs.slide_height - content_top - footer_h - PptCm(0.3)
-    _ppt_bullets(slide, content, scheme, prs, content_top, content_h, font_size)
-
-    # Footer bar
-    footer_top = prs.slide_height - footer_h
-    bar = slide.shapes.add_shape(1, 0, footer_top, prs.slide_width, footer_h)
-    bar.fill.solid()
-    bar.fill.fore_color.rgb = scheme["accent"]
-    bar.line.fill.background()
-    _ppt_add_textbox(
-        slide, "Спасибо за внимание!",
-        PptCm(0.5), footer_top + PptCm(0.2),
-        prs.slide_width - PptCm(1.0), footer_h,
-        font_size=20, bold=True,
-        color=_WHITE,
-        align=PP_ALIGN.CENTER,
-    )
-    _ppt_slide_number(slide, num, scheme, prs)
-
-
-_SLIDE_BUILDERS = {
-    "title":          _ppt_build_title_slide,
-    "content":        _ppt_build_content_slide,
-    "two_column":     _ppt_build_two_column_slide,
-    "section_header": _ppt_build_section_header_slide,
-    "conclusion":     _ppt_build_conclusion_slide,
-    "image_text":     _ppt_build_content_slide,  # graceful fallback
-}
-
-
 # ─── PPTX public ──────────────────────────────────────────────────────────────
 
-def create_presentation_pptx(data: dict, output_path: str) -> str:
-    prs = Presentation()
-    prs.slide_width = Inches(13.33)   # 33.87 cm — 16:9 widescreen
-    prs.slide_height = Inches(7.5)    # 19.05 cm
+async def create_presentation_pptx(data: dict, output_path: str) -> str:
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".json", delete=False, encoding="utf-8"
+    ) as f:
+        json.dump(data, f, ensure_ascii=False)
+        json_path = f.name
 
-    blank_layout = prs.slide_layouts[6]  # Blank
-    scheme = _get_color_scheme(data)
-
-    slides_data = data.get("slides", [])
-    if not slides_data:
-        slides_data = [{"slide_number": 1, "layout": "title", "title": data.get("title", ""), "content": []}]
-
-    for i, slide_data in enumerate(slides_data, start=1):
-        slide = prs.slides.add_slide(blank_layout)
-        layout = slide_data.get("layout", "content")
-        builder = _SLIDE_BUILDERS.get(layout, _ppt_build_content_slide)
-        try:
-            builder(slide, slide_data, scheme, prs, i)
-        except Exception as e:
-            logger.error("Slide build error slide=%s layout=%s: %s", i, layout, e)
-            _ppt_build_content_slide(slide, slide_data, scheme, prs, i)
-
-    prs.save(output_path)
-    logger.info("PPTX saved: %s", output_path)
-    return output_path
+    try:
+        result = await asyncio.to_thread(
+            subprocess.run,
+            ["node", _PPTX_SCRIPT, json_path, output_path],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"pptxgenjs error: {result.stderr}")
+        logger.info("PPTX saved: %s", output_path)
+        return output_path
+    finally:
+        os.unlink(json_path)
 
 
 # ─── Text formatter ──────────────────────────────────────────────────────────

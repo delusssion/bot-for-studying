@@ -1,8 +1,9 @@
 FROM python:3.11-slim
 
-# poppler-utils: required by pdf2image for PDF → image conversion
+# poppler-utils: pdf2image; nodejs+npm: pptxgenjs for presentation generation
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends poppler-utils \
+    && apt-get install -y --no-install-recommends poppler-utils nodejs npm \
+    && npm install -g pptxgenjs \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
