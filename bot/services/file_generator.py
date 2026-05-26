@@ -1,17 +1,22 @@
 import asyncio
+import base64
 import json
 import logging
 import os
 import pathlib
+import re
 import subprocess
 import tempfile
 from typing import List
 
+import httpx
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Cm, Pt, RGBColor
+
+from bot.config import MODEL_PRESENTATION, config
 
 logger = logging.getLogger(__name__)
 
@@ -196,19 +201,41 @@ def create_lab_docx(data: dict, output_path: str) -> str:
 # ─── PPTX public ──────────────────────────────────────────────────────────────
 
 async def create_presentation_pptx(data: dict, output_path: str) -> str:
+    pptx_path = await _generate_pptx_nodejs(data, output_path)
+
+    png_paths = await _convert_to_images(pptx_path)
+    if not png_paths:
+        logger.warning("Visual QA skipped: conversion to images failed")
+        return pptx_path
+
+    issues = await _visual_qa(png_paths, data)
+
+    if issues:
+        logger.info("Visual QA found issues, regenerating: %s", issues[:120])
+        fixed_data = await _fix_presentation_data(data, issues)
+        pptx_path = await _generate_pptx_nodejs(fixed_data, output_path)
+
+    for p in png_paths:
+        try:
+            os.unlink(p)
+        except OSError:
+            pass
+
+    return pptx_path
+
+
+async def _generate_pptx_nodejs(data: dict, output_path: str) -> str:
     with tempfile.NamedTemporaryFile(
         mode="w", suffix=".json", delete=False, encoding="utf-8"
     ) as f:
-        json.dump(data, f, ensure_ascii=False)
+        json.dump(data, f, ensure_ascii=False, indent=2)
         json_path = f.name
 
     try:
         result = await asyncio.to_thread(
             subprocess.run,
             ["node", _PPTX_SCRIPT, json_path, output_path],
-            capture_output=True,
-            text=True,
-            timeout=60,
+            capture_output=True, text=True, timeout=60,
         )
         if result.returncode != 0:
             raise RuntimeError(f"pptxgenjs error: {result.stderr}")
@@ -216,6 +243,122 @@ async def create_presentation_pptx(data: dict, output_path: str) -> str:
         return output_path
     finally:
         os.unlink(json_path)
+
+
+async def _convert_to_images(pptx_path: str) -> List[str]:
+    try:
+        dir_path = os.path.dirname(pptx_path) or "/tmp"
+        basename = os.path.splitext(os.path.basename(pptx_path))[0]
+
+        # PPTX → PDF via libreoffice
+        lo_result = await asyncio.to_thread(
+            subprocess.run,
+            ["libreoffice", "--headless", "--convert-to", "pdf",
+             "--outdir", dir_path, pptx_path],
+            capture_output=True, timeout=90,
+        )
+        pdf_path = os.path.join(dir_path, basename + ".pdf")
+        if not os.path.exists(pdf_path):
+            logger.warning("libreoffice conversion failed: %s", lo_result.stderr.decode())
+            return []
+
+        # PDF → PNG via pdftoppm
+        png_prefix = os.path.join(dir_path, basename + "_slide")
+        await asyncio.to_thread(
+            subprocess.run,
+            ["pdftoppm", "-png", "-r", "100", pdf_path, png_prefix],
+            capture_output=True, timeout=60,
+        )
+        os.unlink(pdf_path)
+
+        prefix_base = os.path.basename(png_prefix)
+        pngs = sorted([
+            os.path.join(dir_path, f)
+            for f in os.listdir(dir_path)
+            if f.startswith(prefix_base) and f.endswith(".png")
+        ])
+        return pngs
+    except Exception as e:
+        logger.error("Convert to images error: %s", e)
+        return []
+
+
+async def _visual_qa(png_paths: List[str], data: dict) -> str | None:
+    try:
+        sample = png_paths[:6]
+        content: list = [{
+            "type": "text",
+            "text": (
+                "Ты эксперт по дизайну презентаций. "
+                "Проверь эти слайды и найди ТОЛЬКО критические проблемы:\n"
+                "- Текст выходит за границы блока\n"
+                "- Текст нечитаем (низкий контраст)\n"
+                "- Элементы перекрываются\n"
+                "- Слайд выглядит пустым или сломанным\n"
+                "- Кириллица не отображается\n\n"
+                "Если всё хорошо — ответь: OK\n"
+                "Если есть проблемы — опиши кратко на русском что исправить "
+                "в тексте и содержимом слайдов (не в коде). Не придирайся к мелочам."
+            ),
+        }]
+        for i, png_path in enumerate(sample):
+            with open(png_path, "rb") as f:
+                img_b64 = base64.b64encode(f.read()).decode()
+            content.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:image/png;base64,{img_b64}"},
+            })
+            content.append({"type": "text", "text": f"Слайд {i + 1}"})
+
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                headers={"Authorization": f"Bearer {config.openrouter_api_key}"},
+                json={
+                    "model": MODEL_PRESENTATION,
+                    "max_tokens": 500,
+                    "messages": [{"role": "user", "content": content}],
+                },
+                timeout=60.0,
+            )
+        answer = resp.json()["choices"][0]["message"]["content"]
+
+        if answer.strip().upper().startswith("OK"):
+            logger.info("Visual QA: no issues found")
+            return None
+        return answer
+    except Exception as e:
+        logger.error("Visual QA error: %s", e)
+        return None
+
+
+async def _fix_presentation_data(data: dict, issues: str) -> dict:
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                headers={"Authorization": f"Bearer {config.openrouter_api_key}"},
+                json={
+                    "model": MODEL_PRESENTATION,
+                    "max_tokens": 3000,
+                    "messages": [{"role": "user", "content": (
+                        f"Исправь JSON презентации.\n"
+                        f"Проблемы найденные при проверке:\n{issues}\n\n"
+                        f"JSON:\n{json.dumps(data, ensure_ascii=False)}\n\n"
+                        f"Верни ТОЛЬКО исправленный JSON без пояснений. "
+                        f"Исправляй только текст и содержимое — не структуру."
+                    )}],
+                },
+                timeout=60.0,
+            )
+        fixed_text = resp.json()["choices"][0]["message"]["content"]
+        match = re.search(r"\{.*\}", fixed_text, re.DOTALL)
+        if match:
+            return json.loads(match.group())
+        return data
+    except Exception as e:
+        logger.error("Fix presentation data error: %s", e)
+        return data
 
 
 # ─── Text formatter ──────────────────────────────────────────────────────────

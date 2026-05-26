@@ -41,7 +41,7 @@ def load_config() -> Config:
         openrouter_api_key=os.environ["OPENROUTER_API_KEY"],
         admin_ids=admin_ids,
         price_lab_docx=int(os.getenv("PRICE_LAB_DOCX", "15000")),
-        price_presentation=int(os.getenv("PRICE_PRESENTATION", "18000")),
+        price_presentation=int(os.getenv("PRICE_PRESENTATION", "25000")),
         price_text_answer=int(os.getenv("PRICE_TEXT_ANSWER", "2000")),
         price_lab_plus_pres=int(os.getenv("PRICE_LAB_PLUS_PRES", "28000")),
         price_extra_edit=int(os.getenv("PRICE_EXTRA_EDIT", "1500")),

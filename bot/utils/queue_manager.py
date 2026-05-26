@@ -39,14 +39,14 @@ class GenerationQueue:
 
     async def _worker(self) -> None:
         while True:
-            priority, seq, fut, coro = await self._pq.get()
+            priority, seq, fut, coro, task_timeout = await self._pq.get()
             self._active += 1
             try:
-                result = await asyncio.wait_for(coro, timeout=GENERATION_TIMEOUT)
+                result = await asyncio.wait_for(coro, timeout=task_timeout)
                 if not fut.done():
                     fut.set_result(result)
             except asyncio.TimeoutError as exc:
-                logger.error("Generation timed out after %ss", GENERATION_TIMEOUT)
+                logger.error("Generation timed out after %ss", task_timeout)
                 if not fut.done():
                     fut.set_exception(exc)
             except Exception as exc:
@@ -77,18 +77,18 @@ class GenerationQueue:
         is_trial: bool = False,
         is_vip: bool = False,
         on_queued: Optional[Callable[[int], Awaitable[None]]] = None,
+        timeout: Optional[int] = None,
     ) -> T:
         """
         Schedule *coro* for execution with the given priority.
         VIP (0) > paid (1) > trial (2) in the min-heap.
-        Raises asyncio.TimeoutError if execution exceeds GENERATION_TIMEOUT.
+        Raises asyncio.TimeoutError if execution exceeds timeout (default GENERATION_TIMEOUT).
         """
         self._start_workers()
 
         if self.is_full and on_queued is not None:
             await on_queued(self.estimate_wait_minutes())
 
-        # Lower value = higher priority in PriorityQueue (min-heap).
         if is_vip:
             priority = 0
         elif not is_trial:
@@ -97,9 +97,10 @@ class GenerationQueue:
             priority = 2
         seq = next(self._counter)
 
+        task_timeout = timeout if timeout is not None else GENERATION_TIMEOUT
         fut: asyncio.Future[T] = asyncio.get_running_loop().create_future()
         self._total += 1
-        await self._pq.put((priority, seq, fut, coro))
+        await self._pq.put((priority, seq, fut, coro, task_timeout))
 
         return await fut
 

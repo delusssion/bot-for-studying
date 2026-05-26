@@ -9,56 +9,62 @@ const fs = require('fs');
 const SCHEMES = {
   blue: {
     bg: '1E3A5F', bgLight: 'F0F4F8',
-    accent: '2E75B6', accent2: 'E8F1FA',
-    title: 'FFFFFF', text: '1A1A2E',
-    header: '1E3A5F', headerText: 'FFFFFF',
+    accent: '2E75B6', accent2: 'D6E4F0',
+    titleText: 'FFFFFF', text: '1A1A2E',
+    headerBg: '1E3A5F', headerText: 'FFFFFF',
+    mutedText: '6B7280',
   },
   green: {
-    bg: '1E4620', bgLight: 'F0F7F0',
-    accent: '2E7D32', accent2: 'E8F5E9',
-    title: 'FFFFFF', text: '1A2E1A',
-    header: '1E4620', headerText: 'FFFFFF',
+    bg: '1B4332', bgLight: 'F0F7F0',
+    accent: '2D6A4F', accent2: 'D8F3DC',
+    titleText: 'FFFFFF', text: '1A2E1A',
+    headerBg: '1B4332', headerText: 'FFFFFF',
+    mutedText: '6B7280',
   },
   dark: {
     bg: '0D1117', bgLight: '161B22',
     accent: '58A6FF', accent2: '21262D',
-    title: 'FFFFFF', text: 'C9D1D9',
-    header: '161B22', headerText: '58A6FF',
+    titleText: 'FFFFFF', text: 'C9D1D9',
+    headerBg: '21262D', headerText: '58A6FF',
+    mutedText: '8B949E',
   },
   minimal: {
-    bg: '212121', bgLight: 'FAFAFA',
-    accent: '424242', accent2: 'F5F5F5',
-    title: 'FFFFFF', text: '212121',
-    header: 'FAFAFA', headerText: '212121',
+    bg: '212121', bgLight: 'FFFFFF',
+    accent: '212121', accent2: 'F5F5F5',
+    titleText: 'FFFFFF', text: '212121',
+    headerBg: '212121', headerText: 'FFFFFF',
+    mutedText: '9E9E9E',
   },
 };
 
-const W = 13.33; // LAYOUT_WIDE width, inches
-const H = 7.5;
+const W      = 13.33;  // LAYOUT_WIDE width, inches
+const H      = 7.5;
 const MARGIN = 0.4;
-const HDR_H = 1.2;
+const HDR_W  = 10.0;   // header/footer strip width (intentional cutoff design)
+const HDR_H  = 1.1;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function getScheme(data) {
   const custom = data.custom_colors;
   if (custom && typeof custom === 'object') {
-    const c = (s, d) => ((s || d) + '').replace(/^#/, '').toUpperCase().padEnd(6, '0');
+    const c = (s, d) => ((s || d) + '').replace(/^#/, '').toUpperCase();
     return {
-      bg:         c(custom.bg || custom.background, '1E3A5F'),
-      bgLight:    c(custom.bgLight, 'F0F4F8'),
-      accent:     c(custom.accent, '2E75B6'),
-      accent2:    c(custom.accent2, 'E8F1FA'),
-      title:      c(custom.title, 'FFFFFF'),
-      text:       c(custom.text, '1A1A2E'),
-      header:     c(custom.header || custom.bg || custom.background, '1E3A5F'),
-      headerText: c(custom.headerText, 'FFFFFF'),
+      bg:         c(custom.bg || custom.background,          '1E3A5F'),
+      bgLight:    c(custom.bgLight,                          'F0F4F8'),
+      accent:     c(custom.accent,                           '2E75B6'),
+      accent2:    c(custom.accent2,                          'D6E4F0'),
+      titleText:  c(custom.titleText || custom.title,        'FFFFFF'),
+      text:       c(custom.text,                             '1A1A2E'),
+      headerBg:   c(custom.headerBg || custom.header || custom.bg, '1E3A5F'),
+      headerText: c(custom.headerText,                       'FFFFFF'),
+      mutedText:  c(custom.mutedText,                        '6B7280'),
     };
   }
   return SCHEMES[data.color_scheme] || SCHEMES.blue;
 }
 
-/** Blend fg over bg at opacity (0–1). Returns 6-char hex. */
+/** Blend fg over bg at opacity 0–1, returns 6-char hex. */
 function blend(bgHex, fgHex, opacity) {
   const p = h => [0, 2, 4].map(i => parseInt(h.slice(i, i + 2), 16));
   const [br, bg, bb] = p(bgHex);
@@ -70,64 +76,72 @@ function blend(bgHex, fgHex, opacity) {
     .toUpperCase();
 }
 
-function noLine() { return { type: 'none' }; }
+const noLine = () => ({ type: 'none' });
 
-function addSlideNumber(slide, num) {
+function addSlideNumber(slide, num, sc) {
   slide.addText(String(num), {
-    x: W - 0.85, y: H - 0.38, w: 0.65, h: 0.28,
-    fontSize: 11, color: '9E9E9E',
+    x: W - 0.8, y: H - 0.38, w: 0.6, h: 0.28,
+    fontSize: 10, color: sc.mutedText,
     fontFace: 'Calibri', align: 'right',
   });
 }
 
 function addHeaderBar(slide, title, sc) {
   slide.addShape('rect', {
-    x: 0, y: 0, w: W, h: HDR_H,
-    fill: { color: sc.header }, line: noLine(),
+    x: 0, y: 0, w: HDR_W, h: HDR_H,
+    fill: { color: sc.headerBg }, line: noLine(),
   });
   slide.addText(title, {
-    x: MARGIN, y: 0, w: W - MARGIN * 2, h: HDR_H,
-    fontSize: 28, bold: true,
+    x: MARGIN, y: 0, w: HDR_W - MARGIN - 0.15, h: HDR_H,
+    fontSize: 26, bold: true,
     color: sc.headerText, fontFace: 'Calibri',
     valign: 'middle', wrap: true,
   });
 }
 
-/** Renders bullet-style blocks. Returns next free Y. */
-function addBulletBlocks(slide, items, sc, startY, maxH) {
-  const BLOCK_H  = 0.56;
-  const BLOCK_GAP = 0.12;
-  const STRIP_W  = 0.08;
-  const BLOCK_W  = W - MARGIN * 2;
-  const maxCount = Math.max(1, Math.floor((maxH + BLOCK_GAP) / (BLOCK_H + BLOCK_GAP)));
-  const visible  = items.slice(0, maxCount);
+/**
+ * Estimate block height from text length.
+ * blockW: usable text width in inches.
+ */
+function calcBlockH(text, fontSize, blockW) {
+  const charsPerLine = Math.max(1, Math.floor(blockW * 10.5 / fontSize));
+  const lines = Math.ceil(text.length / charsPerLine);
+  const lineH = fontSize * 0.0185;
+  return Math.max(0.48, lines * lineH + 0.22);
+}
 
-  visible.forEach((item, i) => {
-    const y = startY + i * (BLOCK_H + BLOCK_GAP);
+/**
+ * Render bullet blocks starting at (x, startY).
+ * Returns final Y position after last block.
+ */
+function drawBulletBlocks(slide, items, sc, x, startY, blockW, maxH, fontSize) {
+  const STRIP_W   = 0.07;
+  const BLOCK_GAP = 0.1;
+  let y = startY;
+
+  for (const item of items) {
+    const text = String(item);
+    const bh   = calcBlockH(text, fontSize, blockW - STRIP_W - 0.27);
+
+    if (y + bh > startY + maxH) break;
+
     slide.addShape('roundRect', {
-      x: MARGIN, y, w: BLOCK_W, h: BLOCK_H,
-      fill: { color: sc.accent2 }, line: noLine(), rectRadius: 0.1,
+      x, y, w: blockW, h: bh,
+      fill: { color: sc.accent2 }, line: noLine(), rectRadius: 0.08,
     });
     slide.addShape('rect', {
-      x: MARGIN, y, w: STRIP_W, h: BLOCK_H,
+      x, y, w: STRIP_W, h: bh,
       fill: { color: sc.accent }, line: noLine(),
     });
-    slide.addText(String(item), {
-      x: MARGIN + STRIP_W + 0.14, y: y + 0.05,
-      w: BLOCK_W - STRIP_W - 0.22, h: BLOCK_H - 0.1,
-      fontSize: 16, color: sc.text,
+    slide.addText(text, {
+      x: x + STRIP_W + 0.15, y: y + 0.05,
+      w: blockW - STRIP_W - 0.22, h: bh - 0.1,
+      fontSize, color: sc.text,
       fontFace: 'Calibri', valign: 'middle', wrap: true,
     });
-  });
-
-  if (items.length > maxCount) {
-    const overY = startY + maxCount * (BLOCK_H + BLOCK_GAP);
-    slide.addText(`… и ещё ${items.length - maxCount} пункт(а)`, {
-      x: MARGIN, y: overY, w: 5, h: 0.28,
-      fontSize: 11, color: '9E9E9E',
-      fontFace: 'Calibri', italic: true,
-    });
+    y += bh + BLOCK_GAP;
   }
+  return y;
 }
 
 // ─── Slide builders ──────────────────────────────────────────────────────────
@@ -136,53 +150,52 @@ function buildTitleSlide(pptx, sd, sc, num) {
   const slide = pptx.addSlide();
   slide.background = { fill: sc.bg };
 
-  // Decorative ghost number — blended at 15% opacity
+  // Ghost decorative number (15% opacity)
   const decoColor = blend(sc.bg, 'FFFFFF', 0.15);
   slide.addText(String(num).padStart(2, '0'), {
-    x: W * 0.52, y: -1,
-    w: W * 0.48, h: H + 2,
-    fontSize: 270, bold: true,
+    x: W * 0.58, y: -0.8,
+    w: W * 0.42, h: H + 1.6,
+    fontSize: 200, bold: true,
     color: decoColor, fontFace: 'Calibri',
     align: 'center', valign: 'middle',
   });
 
-  // Main title
+  // Main title — centered
   slide.addText(sd.title || '', {
-    x: MARGIN, y: H * 0.18,
-    w: W * 0.62, h: H * 0.42,
+    x: MARGIN, y: H * 0.14,
+    w: W - MARGIN * 2, h: H * 0.44,
     fontSize: 44, bold: true,
-    color: sc.title, fontFace: 'Calibri',
-    align: 'left', valign: 'middle',
-    wrap: true,
+    color: sc.titleText, fontFace: 'Calibri',
+    align: 'center', valign: 'middle', wrap: true,
   });
 
   // Subtitle
   const subtitle = sd.subtitle || sd.notes || '';
   if (subtitle) {
     slide.addText(subtitle, {
-      x: MARGIN, y: H * 0.62,
-      w: W * 0.62, h: 0.9,
+      x: MARGIN, y: H * 0.60,
+      w: W - MARGIN * 2, h: 0.9,
       fontSize: 22, color: sc.accent,
-      fontFace: 'Calibri', align: 'left',
+      fontFace: 'Calibri', align: 'center',
       valign: 'top', wrap: true,
-    });
-    // Short accent line under subtitle
-    slide.addShape('rect', {
-      x: MARGIN, y: H * 0.62 + 0.96,
-      w: W * 0.20, h: 0.04,
-      fill: { color: sc.accent }, line: noLine(),
     });
   }
 
-  // Bottom-left caption
-  slide.addText('SmartUchenik', {
-    x: MARGIN, y: H - 0.44,
-    w: 2.5, h: 0.28,
-    fontSize: 11, color: '888888',
-    fontFace: 'Calibri',
+  // Accent line left (25% width)
+  slide.addShape('rect', {
+    x: MARGIN, y: H * 0.60 + (subtitle ? 0.96 : 0),
+    w: W * 0.25, h: 0.04,
+    fill: { color: sc.accent }, line: noLine(),
   });
 
-  addSlideNumber(slide, num);
+  // Bottom-left muted caption
+  slide.addText('SmartUchenik', {
+    x: MARGIN, y: H - 0.42,
+    w: 2.4, h: 0.28,
+    fontSize: 11, color: sc.mutedText, fontFace: 'Calibri',
+  });
+
+  addSlideNumber(slide, num, sc);
 }
 
 function buildContentSlide(pptx, sd, sc, num) {
@@ -190,11 +203,11 @@ function buildContentSlide(pptx, sd, sc, num) {
   slide.background = { fill: sc.bgLight };
   addHeaderBar(slide, sd.title || '', sc);
 
-  const items  = sd.content || [];
-  const startY = HDR_H + 0.2;
-  addBulletBlocks(slide, items, sc, startY, H - startY - 0.38);
+  const startY = HDR_H + 0.18;
+  const blockW = W - MARGIN * 2;
+  drawBulletBlocks(slide, sd.content || [], sc, MARGIN, startY, blockW, H - startY - 0.35, 15);
 
-  addSlideNumber(slide, num);
+  addSlideNumber(slide, num, sc);
 }
 
 function buildTwoColumnSlide(pptx, sd, sc, num) {
@@ -207,7 +220,6 @@ function buildTwoColumnSlide(pptx, sd, sc, num) {
     left  = all.slice(0, mid);
     right = all.slice(mid);
   }
-
   if (!left.length && !right.length) {
     buildContentSlide(pptx, sd, sc, num);
     return;
@@ -217,66 +229,39 @@ function buildTwoColumnSlide(pptx, sd, sc, num) {
   slide.background = { fill: sc.bgLight };
   addHeaderBar(slide, sd.title || '', sc);
 
-  const GAP    = 0.12;
+  const GAP    = 0.2;
   const colW   = (W - MARGIN * 2 - GAP) / 2;
-  const STRIP  = 0.06;
-  const BH     = 0.50;
-  const BG     = 0.10;
-  const startY = HDR_H + 0.2;
+  const startY = HDR_H + 0.18;
+  const colH   = H - startY - 0.35;
   let   colY   = startY;
 
   const lh = sd.left_column_title  || '';
   const rh = sd.right_column_title || '';
   if (lh) {
     slide.addText(lh, {
-      x: MARGIN, y: colY, w: colW, h: 0.32,
-      fontSize: 14, bold: true,
-      color: sc.accent, fontFace: 'Calibri',
+      x: MARGIN, y: colY, w: colW, h: 0.3,
+      fontSize: 14, bold: true, color: sc.accent, fontFace: 'Calibri',
     });
   }
   if (rh) {
     slide.addText(rh, {
-      x: MARGIN + colW + GAP, y: colY, w: colW, h: 0.32,
-      fontSize: 14, bold: true,
-      color: sc.accent, fontFace: 'Calibri',
+      x: MARGIN + colW + GAP, y: colY, w: colW, h: 0.3,
+      fontSize: 14, bold: true, color: sc.accent, fontFace: 'Calibri',
     });
   }
-  if (lh || rh) colY += 0.36;
+  if (lh || rh) colY += 0.34;
 
-  const maxItems = Math.max(1, Math.floor((H - colY - 0.32 + BG) / (BH + BG)));
-
-  const drawItems = (items, rx) => {
-    items.slice(0, maxItems).forEach((item, i) => {
-      const y = colY + i * (BH + BG);
-      slide.addShape('roundRect', {
-        x: rx, y, w: colW, h: BH,
-        fill: { color: sc.accent2 }, line: noLine(), rectRadius: 0.1,
-      });
-      slide.addShape('rect', {
-        x: rx, y, w: STRIP, h: BH,
-        fill: { color: sc.accent }, line: noLine(),
-      });
-      slide.addText(String(item), {
-        x: rx + STRIP + 0.1, y: y + 0.04,
-        w: colW - STRIP - 0.15, h: BH - 0.08,
-        fontSize: 14, color: sc.text,
-        fontFace: 'Calibri', valign: 'middle', wrap: true,
-      });
-    });
-  };
-
-  drawItems(left, MARGIN);
-
-  // Divider
+  // Divider line
   slide.addShape('rect', {
     x: MARGIN + colW + GAP / 2 - 0.01, y: startY,
-    w: 0.02, h: H - startY - 0.32,
+    w: 0.02, h: colH,
     fill: { color: sc.accent }, line: noLine(),
   });
 
-  drawItems(right, MARGIN + colW + GAP);
+  drawBulletBlocks(slide, left,  sc, MARGIN,               colY, colW, H - colY - 0.35, 13);
+  drawBulletBlocks(slide, right, sc, MARGIN + colW + GAP,  colY, colW, H - colY - 0.35, 13);
 
-  addSlideNumber(slide, num);
+  addSlideNumber(slide, num, sc);
 }
 
 function buildSectionHeaderSlide(pptx, sd, sc, num) {
@@ -284,22 +269,22 @@ function buildSectionHeaderSlide(pptx, sd, sc, num) {
   slide.background = { fill: sc.bg };
 
   slide.addText(sd.title || '', {
-    x: MARGIN, y: H * 0.24,
-    w: W - MARGIN * 2, h: H * 0.46,
-    fontSize: 36, bold: true,
-    color: sc.title, fontFace: 'Calibri',
+    x: MARGIN, y: 0,
+    w: W - MARGIN * 2, h: H,
+    fontSize: 38, bold: true,
+    color: sc.titleText, fontFace: 'Calibri',
     align: 'center', valign: 'middle', wrap: true,
   });
 
-  // Centered accent line (30% width) below title
-  const lineW = W * 0.30;
+  // Centered accent line (20% width)
+  const lineW = W * 0.20;
   slide.addShape('rect', {
-    x: (W - lineW) / 2, y: H * 0.24 + H * 0.46 + 0.18,
-    w: lineW, h: 0.06,
+    x: (W - lineW) / 2, y: H * 0.64,
+    w: lineW, h: 0.04,
     fill: { color: sc.accent }, line: noLine(),
   });
 
-  addSlideNumber(slide, num);
+  addSlideNumber(slide, num, sc);
 }
 
 function buildConclusionSlide(pptx, sd, sc, num) {
@@ -307,24 +292,24 @@ function buildConclusionSlide(pptx, sd, sc, num) {
   slide.background = { fill: sc.bgLight };
   addHeaderBar(slide, sd.title || '', sc);
 
-  const FOOTER_H = 0.6;
-  const startY   = HDR_H + 0.2;
-  const maxH     = H - startY - FOOTER_H - 0.18;
-  addBulletBlocks(slide, sd.content || [], sc, startY, maxH);
+  const FOOTER_H = 0.7;
+  const startY   = HDR_H + 0.18;
+  const blockW   = W - MARGIN * 2;
+  drawBulletBlocks(slide, sd.content || [], sc, MARGIN, startY, blockW, H - startY - FOOTER_H - 0.18, 15);
 
-  // Footer bar
+  // Footer strip (10" wide, headerBg color)
   const footerY = H - FOOTER_H;
   slide.addShape('rect', {
-    x: 0, y: footerY, w: W, h: FOOTER_H,
-    fill: { color: sc.bg }, line: noLine(),
+    x: 0, y: footerY, w: HDR_W, h: FOOTER_H,
+    fill: { color: sc.headerBg }, line: noLine(),
   });
   slide.addText('Спасибо за внимание!', {
-    x: 0, y: footerY, w: W, h: FOOTER_H,
-    fontSize: 18, bold: true, color: 'FFFFFF',
+    x: 0, y: footerY, w: HDR_W, h: FOOTER_H,
+    fontSize: 18, bold: true, color: sc.titleText,
     fontFace: 'Calibri', align: 'center', valign: 'middle',
   });
 
-  addSlideNumber(slide, num);
+  addSlideNumber(slide, num, sc);
 }
 
 // ─── Dispatch ─────────────────────────────────────────────────────────────────

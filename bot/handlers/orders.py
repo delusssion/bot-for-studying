@@ -701,8 +701,8 @@ async def _create_and_generate(
     elif order_type in PRES_TYPES:
         await message.answer(
             "⏳ <b>Генерирую презентацию...</b>\n"
-            "Для презентаций используем более мощную модель — "
-            "обычно занимает 60–90 секунд. Пожалуйста, подождите.",
+            "Используем мощную модель и проверку качества — "
+            "обычно занимает 2–3 минуты. Пожалуйста, подождите.",
             parse_mode="HTML",
         )
     else:
@@ -713,6 +713,7 @@ async def _create_and_generate(
             _generate_for_order(message, order["id"], order_type, input_data, photos, user_id, is_vip=is_vip),
             is_trial=is_trial,
             is_vip=is_vip,
+            timeout=240 if order_type in PRES_TYPES else None,
         )
     except asyncio.TimeoutError:
         logger.error("Generation timed out for order #%s user=%s", order["id"], user_id)

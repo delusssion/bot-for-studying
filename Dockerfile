@@ -1,8 +1,8 @@
 FROM python:3.11-slim
 
-# poppler-utils: pdf2image; nodejs+npm: pptxgenjs for presentation generation
+# poppler-utils: pdf2image; nodejs+pptxgenjs: PPTX generation; libreoffice: PPTX→PDF for visual QA
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends poppler-utils nodejs npm \
+    && apt-get install -y --no-install-recommends poppler-utils nodejs npm libreoffice \
     && npm install -g pptxgenjs \
     && rm -rf /var/lib/apt/lists/*
 
