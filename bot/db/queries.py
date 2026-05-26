@@ -293,59 +293,32 @@ async def refund_order(order_id: int) -> Optional[asyncpg.Record]:
         return order
 
 
-# ─── Ozon card payments ───────────────────────────────────────────────────────
+# ─── Card payments ────────────────────────────────────────────────────────────
 
-async def generate_payment_code() -> str:
-    chars = string.ascii_uppercase + string.digits
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        while True:
-            suffix = "".join(random.choices(chars, k=4))
-            code = f"UCH-{suffix}"
-            exists = await conn.fetchval(
-                "SELECT id FROM payments WHERE payment_code = $1", code
-            )
-            if not exists:
-                return code
-
-
-async def create_ozon_payment(
-    user_id: int, amount_kopecks: int, code: str
-) -> Optional[asyncpg.Record]:
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        try:
-            return await conn.fetchrow(
-                """
-                INSERT INTO payments (user_id, amount_kopecks, type, payment_code, expires_at, status)
-                VALUES ($1, $2, 'ozon_card', $3, NOW() + INTERVAL '30 minutes', 'pending')
-                RETURNING *
-                """,
-                user_id, amount_kopecks, code,
-            )
-        except asyncpg.UniqueViolationError:
-            return None
-
-
-async def get_payment_by_code(code: str) -> Optional[asyncpg.Record]:
+async def create_card_payment(user_id: int, amount_kopecks: int) -> asyncpg.Record:
     pool = await get_pool()
     async with pool.acquire() as conn:
         return await conn.fetchrow(
-            "SELECT * FROM payments WHERE payment_code = $1", code
+            """
+            INSERT INTO payments (user_id, amount_kopecks, type, paid_at, status)
+            VALUES ($1, $2, 'ozon_card', NOW(), 'pending')
+            RETURNING *
+            """,
+            user_id, amount_kopecks,
         )
 
 
-async def confirm_ozon_payment(code: str) -> Optional[asyncpg.Record]:
+async def confirm_card_payment(payment_id: int) -> Optional[asyncpg.Record]:
     pool = await get_pool()
     async with pool.acquire() as conn:
         payment = await conn.fetchrow(
-            "SELECT * FROM payments WHERE payment_code = $1 AND status = 'pending'", code
+            "SELECT * FROM payments WHERE id = $1 AND status = 'pending'", payment_id
         )
         if not payment:
             return None
         async with conn.transaction():
             await conn.execute(
-                "UPDATE payments SET status = 'success' WHERE id = $1", payment["id"]
+                "UPDATE payments SET status = 'success' WHERE id = $1", payment_id
             )
             await conn.execute(
                 "UPDATE users SET balance = balance + $2 WHERE user_id = $1",
@@ -354,34 +327,22 @@ async def confirm_ozon_payment(code: str) -> Optional[asyncpg.Record]:
         return payment
 
 
-async def reject_ozon_payment(code: str, reason: str) -> Optional[asyncpg.Record]:
+async def reject_card_payment(payment_id: int) -> Optional[asyncpg.Record]:
     pool = await get_pool()
     async with pool.acquire() as conn:
         payment = await conn.fetchrow(
-            "SELECT * FROM payments WHERE payment_code = $1 AND status = 'pending'", code
+            "SELECT * FROM payments WHERE id = $1 AND status = 'pending'", payment_id
         )
         if not payment:
             return None
         await conn.execute(
-            "UPDATE payments SET status = 'rejected', reject_reason = $2 WHERE id = $1",
-            payment["id"], reason,
+            "UPDATE payments SET status = 'rejected' WHERE id = $1", payment_id
         )
         return payment
 
 
-async def get_expired_pending_payments() -> List[asyncpg.Record]:
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        return await conn.fetch(
-            """
-            SELECT * FROM payments
-            WHERE status = 'pending' AND type = 'ozon_card'
-            AND expires_at IS NOT NULL AND expires_at < NOW()
-            """
-        )
-
-
-async def get_all_pending_ozon_payments() -> List[asyncpg.Record]:
+async def get_expired_card_payments() -> List[asyncpg.Record]:
+    """Payments pending more than 60 minutes without confirmation."""
     pool = await get_pool()
     async with pool.acquire() as conn:
         return await conn.fetch(
@@ -390,20 +351,30 @@ async def get_all_pending_ozon_payments() -> List[asyncpg.Record]:
             FROM payments p
             JOIN users u ON u.user_id = p.user_id
             WHERE p.status = 'pending' AND p.type = 'ozon_card'
-            AND p.expires_at > NOW()
-            ORDER BY p.created_at DESC
+            AND p.paid_at IS NOT NULL AND p.paid_at < NOW() - INTERVAL '60 minutes'
             """
         )
 
 
-async def get_pending_ozon_payments_count() -> int:
+async def get_all_pending_card_payments() -> List[asyncpg.Record]:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        return await conn.fetch(
+            """
+            SELECT p.*, u.username, u.full_name
+            FROM payments p
+            JOIN users u ON u.user_id = p.user_id
+            WHERE p.status = 'pending' AND p.type = 'ozon_card'
+            ORDER BY p.paid_at DESC NULLS LAST
+            """
+        )
+
+
+async def get_pending_card_payments_count() -> int:
     pool = await get_pool()
     async with pool.acquire() as conn:
         val = await conn.fetchval(
-            """
-            SELECT COUNT(*) FROM payments
-            WHERE status = 'pending' AND type = 'ozon_card' AND expires_at > NOW()
-            """
+            "SELECT COUNT(*) FROM payments WHERE status = 'pending' AND type = 'ozon_card'"
         )
         return int(val or 0)
 

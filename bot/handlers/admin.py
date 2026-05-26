@@ -11,19 +11,18 @@ from aiogram.types import CallbackQuery, Message
 
 from bot.config import config
 from bot.db.queries import (
-    add_vip, block_user, confirm_ozon_payment, get_admin_stats_extended,
-    get_all_pending_ozon_payments, get_all_vip_users, get_all_user_ids,
-    get_finance_stats, get_order_by_id, get_pending_ozon_payments_count,
+    add_vip, block_user, confirm_card_payment, get_admin_stats_extended,
+    get_all_pending_card_payments, get_all_vip_users, get_all_user_ids,
+    get_finance_stats, get_order_by_id, get_pending_card_payments_count,
     get_setting, get_user, get_user_balance, get_user_by_username,
     get_user_full_stats, get_vip_usage_stats_today, refund_order,
-    reject_ozon_payment, remove_vip, set_setting, unblock_user,
+    reject_card_payment, remove_vip, set_setting, unblock_user,
 )
 from bot.keyboards.admin_kb import (
     adm_cancel_kb, admin_menu_kb, broadcast_audience_kb,
     broadcast_confirm_kb, finance_period_kb, payment_confirm_kb,
-    payment_reject_reasons_kb, prices_kb, refund_confirm_kb,
-    settings_menu_kb, stats_kb, user_card_kb, users_menu_kb,
-    vip_menu_kb, vip_remove_confirm_kb,
+    prices_kb, refund_confirm_kb, settings_menu_kb, stats_kb,
+    user_card_kb, users_menu_kb, vip_menu_kb, vip_remove_confirm_kb,
 )
 from bot.keyboards.main_kb import get_support_button, main_menu_kb
 from bot.utils.helpers import format_datetime, kopecks_to_rubles, order_type_label
@@ -650,7 +649,7 @@ async def adm_bc_send(callback: CallbackQuery, state: FSMContext) -> None:
 @router.message(StateFilter(AdminStates), F.text == "💰 Финансы")
 @admin_only
 async def adm_finance_menu(message: Message, state: FSMContext) -> None:
-    pending_count = await get_pending_ozon_payments_count()
+    pending_count = await get_pending_card_payments_count()
     await message.answer(
         "💰 <b>Финансы</b>\n\nВыберите период:",
         reply_markup=finance_period_kb(pending_count),
@@ -691,7 +690,7 @@ async def adm_finance_period(callback: CallbackQuery, state: FSMContext) -> None
         f"\n\nВозвраты: {st['refunds']} шт · {r(st['refund_amt'])}\n"
         f"Чистая выручка: {r(st['net'])}"
     )
-    pending_count = await get_pending_ozon_payments_count()
+    pending_count = await get_pending_card_payments_count()
     await callback.message.edit_text(text, reply_markup=finance_period_kb(pending_count), parse_mode="HTML")
     await callback.answer()
 
@@ -804,36 +803,37 @@ async def adm_price_input(message: Message, state: FSMContext) -> None:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# OZON PAYMENT CONFIRMATION
+# CARD PAYMENT CONFIRMATION
 # ═══════════════════════════════════════════════════════════════════════════════
 
 @router.callback_query(F.data == "adm:pending_payments")
 @admin_cb_only
 async def adm_pending_payments(callback: CallbackQuery) -> None:
-    from datetime import timezone
-    payments = await get_all_pending_ozon_payments()
+    payments = await get_all_pending_card_payments()
     if not payments:
-        pending_count = 0
         await callback.message.edit_text(
             "⏳ Нет ожидающих подтверждения платежей.",
-            reply_markup=finance_period_kb(pending_count),
+            reply_markup=finance_period_kb(0),
         )
         await callback.answer()
         return
     await callback.answer()
-    now = datetime.now(timezone.utc)
     for p in payments:
         uname = f"@{p['username']}" if p.get("username") else p.get("full_name", str(p["user_id"]))
         rubles = p["amount_kopecks"] // 100
-        expires = p["expires_at"]
-        expires_utc = expires.replace(tzinfo=timezone.utc) if expires.tzinfo is None else expires
-        mins = max(0, int((expires_utc - now).total_seconds() // 60))
+        paid_at = p["paid_at"]
+        if paid_at:
+            from datetime import timezone
+            paid_msk = paid_at.replace(tzinfo=timezone.utc).astimezone(_MSK)
+            time_str = paid_msk.strftime("%H:%M МСК %d.%m.%Y")
+        else:
+            time_str = "—"
         await callback.message.answer(
-            f"💳 <b>Платёж {p['payment_code']}</b>\n"
+            f"💳 <b>Платёж #{p['id']}</b>\n"
             f"👤 {uname} (<code>{p['user_id']}</code>)\n"
             f"💰 {rubles} ₽\n"
-            f"⏱ Истекает через {mins} мин.",
-            reply_markup=payment_confirm_kb(p["payment_code"]),
+            f"🕐 {time_str}",
+            reply_markup=payment_confirm_kb(p["id"]),
             parse_mode="HTML",
         )
 
@@ -841,8 +841,8 @@ async def adm_pending_payments(callback: CallbackQuery) -> None:
 @router.callback_query(F.data.startswith("confirm_payment:"))
 @admin_cb_only
 async def confirm_payment(callback: CallbackQuery) -> None:
-    code = callback.data.split(":", 1)[1]
-    payment = await confirm_ozon_payment(code)
+    payment_id = int(callback.data.split(":", 1)[1])
+    payment = await confirm_card_payment(payment_id)
     if not payment:
         await callback.answer("❌ Платёж не найден или уже обработан", show_alert=True)
         await callback.message.edit_reply_markup(reply_markup=None)
@@ -854,7 +854,7 @@ async def confirm_payment(callback: CallbackQuery) -> None:
 
     try:
         await callback.message.edit_text(
-            callback.message.text + f"\n\n✅ <b>Подтверждено</b> — {rubles} ₽ зачислено {uname}",
+            f"✅ Подтверждено\n{uname} — {rubles} ₽ зачислено",
             parse_mode="HTML",
         )
     except Exception:
@@ -876,78 +876,9 @@ async def confirm_payment(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith("reject_payment:"))
 @admin_cb_only
-async def reject_payment_start(callback: CallbackQuery) -> None:
-    code = callback.data.split(":", 1)[1]
-    await callback.message.edit_reply_markup(
-        reply_markup=payment_reject_reasons_kb(code)
-    )
-    await callback.answer()
-
-
-_REJECT_REASON_LABELS = {
-    "no_transfer": "Перевод не поступил",
-    "wrong_amount": "Неверная сумма",
-    "no_code": "Код не указан в комментарии",
-}
-
-
-@router.callback_query(F.data.startswith("reject_reason:"))
-@admin_cb_only
-async def reject_reason_chosen(callback: CallbackQuery, state: FSMContext) -> None:
-    parts = callback.data.split(":")
-    code = parts[1]
-    reason_key = parts[2]
-
-    if reason_key == "custom":
-        await callback.message.edit_reply_markup(reply_markup=None)
-        await state.set_state(AdminStates.rejecting_payment_custom)
-        await state.update_data(rejecting_payment_code=code)
-        await callback.message.answer(
-            "Введите причину отклонения:", reply_markup=adm_cancel_kb()
-        )
-        await callback.answer()
-        return
-
-    reason = _REJECT_REASON_LABELS.get(reason_key, reason_key)
-    await _do_reject_payment(callback, code, reason)
-
-
-@router.message(StateFilter(AdminStates.rejecting_payment_custom), F.text)
-@admin_only
-async def reject_custom_reason_input(message: Message, state: FSMContext) -> None:
-    data = await state.get_data()
-    code = data.get("rejecting_payment_code", "")
-    reason = message.text.strip()
-    await state.set_state(AdminStates.in_admin)
-
-    payment = await reject_ozon_payment(code, reason)
-    if not payment:
-        await message.answer("❌ Платёж не найден или уже обработан.", reply_markup=admin_menu_kb())
-        return
-
-    rubles = payment["amount_kopecks"] // 100
-    user = await get_user(payment["user_id"])
-    uname = f"@{user['username']}" if user and user.get("username") else str(payment["user_id"])
-
-    await message.answer(
-        f"❌ Отклонено — {uname} · {rubles} ₽\nПричина: {reason}",
-        reply_markup=admin_menu_kb(),
-    )
-    try:
-        await message.bot.send_message(
-            payment["user_id"],
-            f"❌ <b>Пополнение отклонено.</b>\n"
-            f"Причина: {reason}\n\n"
-            f"Попробуйте снова или напишите в поддержку.",
-            reply_markup=get_support_button(),
-            parse_mode="HTML",
-        )
-    except Exception:
-        pass
-
-
-async def _do_reject_payment(callback: CallbackQuery, code: str, reason: str) -> None:
-    payment = await reject_ozon_payment(code, reason)
+async def reject_payment(callback: CallbackQuery) -> None:
+    payment_id = int(callback.data.split(":", 1)[1])
+    payment = await reject_card_payment(payment_id)
     if not payment:
         await callback.answer("❌ Платёж не найден или уже обработан", show_alert=True)
         await callback.message.edit_reply_markup(reply_markup=None)
@@ -959,7 +890,7 @@ async def _do_reject_payment(callback: CallbackQuery, code: str, reason: str) ->
 
     try:
         await callback.message.edit_text(
-            callback.message.text + f"\n\n❌ <b>Отклонено</b> — {uname}\nПричина: {reason}",
+            f"❌ Отклонено — {uname} {rubles} ₽",
             parse_mode="HTML",
         )
     except Exception:
@@ -968,9 +899,9 @@ async def _do_reject_payment(callback: CallbackQuery, code: str, reason: str) ->
     try:
         await callback.bot.send_message(
             payment["user_id"],
-            f"❌ <b>Пополнение отклонено.</b>\n"
-            f"Причина: {reason}\n\n"
-            f"Попробуйте снова или напишите в поддержку.",
+            "❌ <b>Пополнение не подтверждено.</b>\n"
+            "Если вы уверены что перевод прошёл —\n"
+            "напишите в поддержку.",
             reply_markup=get_support_button(),
             parse_mode="HTML",
         )

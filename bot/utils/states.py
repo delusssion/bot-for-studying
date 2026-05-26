@@ -36,7 +36,6 @@ class AdminStates(StatesGroup):
     broadcasting = State()
     broadcast_preview = State()
     editing_price = State()
-    rejecting_payment_custom = State()
 
 
 class TopUpStates(StatesGroup):
