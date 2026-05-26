@@ -12,7 +12,7 @@ PRESET_AMOUNTS = [
 
 def balance_main_kb() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
-    builder.button(text="💳 Карта Ozon", callback_data="topup_method:card")
+    builder.button(text="💳 Карта", callback_data="topup_method:card")
     builder.button(text="⭐ Telegram Stars", callback_data="topup_method:stars")
     builder.adjust(1)
     return builder.as_markup()
